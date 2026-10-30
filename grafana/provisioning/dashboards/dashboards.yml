@@ -1,0 +1,16 @@
+apiVersion: 1
+
+# As subpastas de grafana/dashboards/ viram pastas no Grafana:
+#   infra/     -> "infra"     (visao de capacidade/saude dos servidores)
+#   operacao/  -> "operacao"  (logs e eventos para quem investiga incidentes)
+# Separar por pasta permite dar acesso por Team (ver docs/decisoes-e-licoes.md).
+providers:
+  - name: default
+    orgId: 1
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true

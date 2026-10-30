@@ -1,0 +1,25 @@
+# /etc/systemd/system/node_exporter.service  (no servidor SATELITE)
+# Binario nativo (sem Docker). Escuta SOMENTE em loopback; o hub chega ate ele
+# pelo tunel reverso.
+
+[Unit]
+Description=Prometheus Node Exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+ExecStart=/usr/local/bin/node_exporter \
+  --web.listen-address=127.0.0.1:9100 \
+  --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|run|var/lib/docker/.+)($|/) \
+  --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/var/lib/node_exporter/textfile_collector
+
+[Install]
+WantedBy=multi-user.target

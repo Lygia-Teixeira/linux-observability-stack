@@ -1,0 +1,27 @@
+# Trecho para /etc/ssh/sshd_config do HUB (srv-monitor).
+# Um usuario e uma chave ed25519 dedicados por servidor satelite.
+#
+# Criacao do usuario (exemplo para srv-01):
+#   useradd --system --create-home --shell /bin/true tunnel-srv-01
+#   # Senha "*" (nenhuma senha valida) em vez de "!!" (conta bloqueada):
+#   # com "!!" o PAM bloqueia o login mesmo usando chave SSH.
+#   usermod -p '*' tunnel-srv-01
+#   install -d -m 700 -o tunnel-srv-01 /home/tunnel-srv-01/.ssh
+#   # cole a chave PUBLICA gerada no satelite em authorized_keys, com restricoes:
+#   #   restrict,port-forwarding,permitopen="127.0.0.1:3100" ssh-ed25519 AAAA... srv-01
+#
+# Valide antes de recarregar:  sshd -t && systemctl reload sshd
+
+Match User tunnel-srv-01
+    AllowTcpForwarding yes
+    # Necessario para o -R escutar em 172.19.0.1 (gateway Docker) em vez de
+    # loopback. Em OpenSSH >= 8.7, prefira restringir tambem com PermitListen.
+    GatewayPorts clientspecified
+    # PermitListen 172.19.0.1:19100
+    PermitOpen 127.0.0.1:3100
+    PermitTTY no
+    X11Forwarding no
+    AllowAgentForwarding no
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    ForceCommand /bin/true

@@ -1,0 +1,41 @@
+# /etc/systemd/system/monitoring-tunnel.service  (no servidor SATELITE)
+#
+# Tunel SSH persistente, iniciado pelo satelite em direcao ao hub. Nenhuma porta
+# nova e exposta na internet em nenhum dos lados.
+#
+#   -L 13100:127.0.0.1:3100            Alloy local -> Loki do hub
+#   -R 172.19.0.1:<PORTA>:127.0.0.1:9100
+#                                       hub escuta SO no gateway da rede Docker
+#                                       e encaminha para o node_exporter local
+#
+# Ajuste: HUB_HOST, HUB_SSH_PORT, TUNNEL_USER e REMOTE_PORT (19100-19110, uma por
+# servidor, igual ao target configurado no prometheus.yml do hub).
+
+[Unit]
+Description=Tunel SSH de monitoramento (node_exporter + Loki)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=HUB_HOST=srv-monitor.example.com
+Environment=HUB_SSH_PORT=22
+Environment=TUNNEL_USER=tunnel-srv-01
+Environment=REMOTE_PORT=19100
+ExecStart=/usr/bin/ssh -N -T \
+  -i /etc/monitoring-tunnel/id_ed25519 \
+  -o UserKnownHostsFile=/etc/monitoring-tunnel/known_hosts \
+  -o StrictHostKeyChecking=yes \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o BatchMode=yes \
+  -p ${HUB_SSH_PORT} \
+  -L 127.0.0.1:13100:127.0.0.1:3100 \
+  -R 172.19.0.1:${REMOTE_PORT}:127.0.0.1:9100 \
+  ${TUNNEL_USER}@${HUB_HOST}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

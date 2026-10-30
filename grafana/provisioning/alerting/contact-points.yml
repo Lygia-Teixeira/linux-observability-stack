@@ -1,0 +1,14 @@
+apiVersion: 1
+
+# E-mail via SMTP externo (variaveis GF_SMTP_* no .env).
+# ALERT_EMAIL e interpolado a partir do ambiente do container Grafana.
+contactPoints:
+  - orgId: 1
+    name: equipe-infra
+    receivers:
+      - uid: equipe-infra-email
+        type: email
+        settings:
+          addresses: ${ALERT_EMAIL}
+          singleEmail: false
+        disableResolveMessage: false

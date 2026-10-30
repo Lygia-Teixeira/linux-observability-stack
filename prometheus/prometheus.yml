@@ -1,0 +1,49 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          instance: 'prometheus'
+
+  # Node Exporter do proprio hub (container na mesma rede Docker).
+  - job_name: node-exporter
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          instance: 'srv-monitor'
+
+  # ---------------------------------------------------------------------------
+  # Servidores satelite.
+  # Cada satelite abre um tunel SSH reverso (-R 172.19.0.1:191XX:127.0.0.1:9100)
+  # e o Prometheus faz scrape no gateway da rede Docker, que nao e alcancavel
+  # pela internet. Uma porta por servidor, na faixa 19100-19110.
+  #
+  # O nome do job sempre comeca com "node-exporter" para que dashboards e
+  # alertas (up{job=~"node-exporter.*"}) incluam o servidor automaticamente.
+  # O label "instance" deve ser igual ao label "host" usado no Alloy do mesmo
+  # servidor, para correlacionar metricas e logs.
+  # ---------------------------------------------------------------------------
+  - job_name: node-exporter-srv-01
+    static_configs:
+      - targets: ['172.19.0.1:19100']
+        labels:
+          instance: 'srv-01'
+
+  - job_name: node-exporter-srv-02
+    static_configs:
+      - targets: ['172.19.0.1:19101']
+        labels:
+          instance: 'srv-02'
+
+  - job_name: node-exporter-srv-03
+    static_configs:
+      - targets: ['172.19.0.1:19102']
+        labels:
+          instance: 'srv-03'
+
+  # Para adicionar um servidor, copie um bloco acima, use a proxima porta livre
+  # (19103, 19104, ...) e recarregue: curl -X POST http://127.0.0.1:9090/-/reload

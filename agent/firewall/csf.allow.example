@@ -1,0 +1,20 @@
+# Exemplos de regras para CSF (ConfigServer Security & Firewall).
+# Sintaxe avancada: proto|in/out|s/d=porta|s/d=ip
+# ATENCAO: os prefixos s=/d= valem para CADA campo isoladamente (porta e IP),
+# nao indicam a direcao da regra. Para restringir o DESTINO de uma regra de
+# saida, use d= tambem no IP.
+
+# ---------------------------------------------------------------------------
+# No HUB: permitir que somente a rede Docker interna alcance as portas dos
+# tuneis reversos. Use uma FAIXA desde o inicio: cada "csf -r" recarrega o
+# iptables do zero e apaga as regras do Docker (exige systemctl restart docker
+# depois). Com a faixa pronta, novos satelites nao exigem reiniciar nada.
+# ---------------------------------------------------------------------------
+tcp|in|d=19100:19110|s=172.19.0.0/16
+
+# ---------------------------------------------------------------------------
+# No SATELITE: somente se o CSF tiver politica restritiva de SAIDA.
+# Libera apenas a porta SSH do hub, no IP do hub.
+# Teste antes de configurar o resto:  nc -zv 192.0.2.10 22
+# ---------------------------------------------------------------------------
+tcp|out|d=22|d=192.0.2.10

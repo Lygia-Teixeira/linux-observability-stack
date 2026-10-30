@@ -1,0 +1,188 @@
+apiVersion: 1
+
+# Regras de alerta de infraestrutura.
+# Obs.: arquivos de provisionamento interpolam variaveis de ambiente, por isso
+# templates usam $$labels (escapado) em vez de $labels.
+# Cada regra e avaliada por servidor (label "instance"): um alerta em um
+# servidor nao afeta os demais.
+#
+# Limiares: 85% para CPU/memoria/disco. A janela "for" e o que evita falso
+# positivo: ao reiniciar o node_exporter os contadores de CPU zeram e geram um
+# pico artificial que coloca "CPU alta" em Pending, mas o pico dura bem menos
+# que 10 minutos e nunca dispara. Ver docs/decisoes-e-licoes.md (calibracao).
+
+groups:
+  - orgId: 1
+    name: infra-servidores
+    folder: Alertas
+    interval: 1m
+    rules:
+      # -----------------------------------------------------------------------
+      - uid: srv-offline
+        title: Servidor offline
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: max by(instance) (up{job=~"node-exporter.*"})
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+        for: 2m
+        # Sem dados do Prometheus tambem e motivo para alertar.
+        noDataState: Alerting
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "Servidor {{ $$labels.instance }} offline"
+          description: "O alvo node-exporter de {{ $$labels.instance }} nao responde ha 2 minutos (agente parado, tunel SSH caido ou servidor fora do ar)."
+
+      # -----------------------------------------------------------------------
+      - uid: cpu-alta
+        title: CPU alta
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [85]
+        for: 10m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU acima de 85% em {{ $$labels.instance }}"
+          description: "Uso de CPU sustentado acima de 85% por 10 minutos."
+
+      # -----------------------------------------------------------------------
+      - uid: memoria-alta
+        title: Memoria alta
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              # Usa MemAvailable: cache/buffer do Linux nao conta como memoria presa.
+              expr: 100 * (1 - (avg by(instance) (node_memory_MemAvailable_bytes) / avg by(instance) (node_memory_MemTotal_bytes)))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [85]
+        for: 10m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memoria acima de 85% em {{ $$labels.instance }}"
+          description: "Memoria em uso (baseada em MemAvailable) acima de 85% por 10 minutos."
+
+      # -----------------------------------------------------------------------
+      - uid: disco-alto
+        title: Disco alto
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 100 - (avg by(instance) (node_filesystem_avail_bytes{mountpoint="/"}) / avg by(instance) (node_filesystem_size_bytes{mountpoint="/"}) * 100)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [85]
+        for: 15m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disco raiz acima de 85% em {{ $$labels.instance }}"
+          description: "Particao / acima de 85% por 15 minutos. Rotinas de backup podem causar saltos temporarios; verifique antes de agir."

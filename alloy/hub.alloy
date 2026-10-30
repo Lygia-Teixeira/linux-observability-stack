@@ -1,0 +1,176 @@
+// =============================================================================
+// Alloy -- hub (srv-monitor), rodando em container no docker-compose.
+//
+// Fontes:
+//   1. Logs dos containers Docker (via socket, somente leitura)
+//   2. Journal do systemd do host
+// Destino: Loki local (http://loki:3100).
+//
+// A classificacao "categoria" segue as mesmas regras de alloy/agent.alloy,
+// para que os filtros do dashboard funcionem igual em todos os servidores.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// 1. Containers Docker
+// -----------------------------------------------------------------------------
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "docker" {
+  targets = discovery.docker.containers.targets
+
+  // Sem estes labels os logs de container chegam sem identificacao.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_id"]
+    target_label  = "container_id"
+  }
+
+  // Exclua containers legados/de teste da coleta antes que virem ruido
+  // (containers antigos podem ter driver de log incompativel e um backlog
+  // grande sendo reprocessado).
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(legacy_|teste_).*"
+    action        = "drop"
+  }
+}
+
+loki.source.docker "docker_logs" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.containers.targets
+  relabel_rules = discovery.relabel.docker.rules
+  labels        = {
+    host      = "srv-monitor",
+    job       = "docker",
+    categoria = "monitoramento",
+  }
+  forward_to = [loki.process.hub_noise.receiver]
+}
+
+// -----------------------------------------------------------------------------
+// 2. Journal do host
+// -----------------------------------------------------------------------------
+discovery.relabel "journal" {
+  targets = []
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    regex         = "session-.*\\.scope|.*\\.mount"
+    action        = "drop"
+  }
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+}
+
+loki.source.journal "journal_logs" {
+  max_age       = "1h"
+  relabel_rules = discovery.relabel.journal.rules
+  labels        = {
+    host = "srv-monitor",
+    job  = "journal",
+  }
+  forward_to = [loki.process.hub_noise.receiver]
+}
+
+// -----------------------------------------------------------------------------
+// 3. Descarte de ruido + classificacao
+// -----------------------------------------------------------------------------
+loki.process "hub_noise" {
+
+  // Ruido de ciclo de vida normal de container.
+  stage.match {
+    selector            = "{unit=\"containerd.service\"} |= \"cleaning up after shim disconnected\""
+    action              = "drop"
+    drop_counter_reason = "containerd_shim_cleanup"
+  }
+
+  // Autodiagnostico interno do proprio Loki (nao e sinal externo).
+  stage.match {
+    selector            = "{container=\"monitoring-loki\"} |= \"unable to get stream rates from ingester\""
+    action              = "drop"
+    drop_counter_reason = "loki_internal_ratestore"
+  }
+
+  // Classificacao do journal (mesmas regras do agente, resumidas).
+  stage.match {
+    selector = "{job=\"journal\"}"
+
+    stage.static_labels {
+      values = { categoria = "sistema" }
+    }
+  }
+
+  stage.match {
+    selector = "{job=\"journal\", unit=~\"(sshd|ssh|systemd-logind|cphulkd|sudo).*\"}"
+    stage.static_labels {
+      values = { categoria = "autenticacao" }
+    }
+  }
+
+  stage.match {
+    selector = "{job=\"journal\", unit=~\"(httpd|apache2|nginx).*\"}"
+    stage.static_labels {
+      values = { categoria = "web" }
+    }
+  }
+
+  stage.match {
+    selector = "{job=\"journal\", unit=~\"(mysqld|mariadb|postgresql).*\"}"
+    stage.static_labels {
+      values = { categoria = "banco" }
+    }
+  }
+
+  stage.match {
+    selector = "{job=\"journal\", unit=~\"(exim|dovecot|postfix|spamd).*\"}"
+    stage.static_labels {
+      values = { categoria = "email" }
+    }
+  }
+
+  stage.match {
+    selector = "{job=\"journal\", unit=~\"(lfd|csf|firewalld|fail2ban).*\"}"
+    stage.static_labels {
+      values = { categoria = "firewall" }
+    }
+  }
+
+  stage.match {
+    selector = "{job=\"journal\", unit=~\"(docker|containerd).*\"}"
+    stage.static_labels {
+      values = { categoria = "aplicacao" }
+    }
+  }
+
+  stage.match {
+    selector = "{job=\"journal\"} |~ \"(?i)ipdb blocked|lfd|tcp_in blocked|udp_in blocked\""
+    stage.static_labels {
+      values = { categoria = "firewall" }
+    }
+  }
+
+  stage.match {
+    selector = "{job=\"journal\"} |~ \"(?i)failed password|authentication failure|invalid user\""
+    stage.static_labels {
+      values = { categoria = "autenticacao" }
+    }
+  }
+
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

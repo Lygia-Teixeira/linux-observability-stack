@@ -1,0 +1,23 @@
+# Segredos
+.env
+*.env
+!.env.example
+
+# Chaves SSH dos tuneis
+*.key
+*.pem
+id_ed25519*
+known_hosts
+
+# Dados gerados localmente
+node-exporter-textfile/*.prom
+data/
+
+# Dashboards baixados de terceiros (ver scripts/fetch-node-exporter-full.sh)
+grafana/dashboards/infra/node-exporter-full.json
+
+# Editores / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

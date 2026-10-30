@@ -1,0 +1,214 @@
+// =============================================================================
+// Alloy -- agente para servidor satelite (srv-01, srv-02, ...)
+//
+// Instalado como binario nativo + servico systemd (sem Docker).
+// Envia logs para o Loki do hub atraves do tunel SSH local:
+//   127.0.0.1:13100  --(ssh -L)-->  hub 127.0.0.1:3100
+//
+// Antes de usar:
+//   1. Troque "srv-01" pelo nome do servidor (igual ao "instance" no Prometheus).
+//   2. Valide a sintaxe:  alloy fmt /etc/alloy/config.alloy
+//   3. systemctl restart alloy && systemctl is-active alloy
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// 1. Journal do systemd
+// -----------------------------------------------------------------------------
+discovery.relabel "journal" {
+  targets = []
+
+  // Cada login SSH cria uma unidade session-*.scope unica. Sem este filtro o
+  // numero de streams cresce sem limite e o Loki passa a rejeitar escritas
+  // ("maximum active stream limit exceeded").
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    regex         = "session-.*\\.scope|.*\\.mount"
+    action        = "drop"
+  }
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+
+  // Identificador de syslog: util para mensagens sem unit (ex.: kernel/iptables)
+  rule {
+    source_labels = ["__journal_syslog_identifier"]
+    target_label  = "syslog_identifier"
+  }
+}
+
+loki.source.journal "journal_logs" {
+  max_age       = "1h"
+  relabel_rules = discovery.relabel.journal.rules
+  labels        = {
+    host = "srv-01",
+    job  = "journal",
+  }
+  forward_to = [loki.process.categoria.receiver]
+}
+
+// -----------------------------------------------------------------------------
+// 2. Classificacao (label "categoria") e descarte de ruido
+//
+// A classificacao e feita aqui, na coleta, e nao no dashboard: o
+// "detected_level" automatico do Loki nao marca bloqueios de firewall nem boa
+// parte dos logs de autenticacao como erro/aviso.
+//
+// Ordem importa: "sistema" e o padrao; cada stage.match seguinte sobrescreve
+// o label quando casa. Os fallbacks por texto ficam por ultimo porque cobrem
+// mensagens que chegam sem unit propria (ex.: bloqueios do firewall).
+// -----------------------------------------------------------------------------
+loki.process "categoria" {
+
+  // --- Descarte de ruido na origem -------------------------------------------
+  // Exemplo: aplicacao que despeja SQL/WARN de rotina no journal. Mantem
+  // somente linhas com sinal real. Confirme no historico, antes de ativar, que
+  // nenhuma linha relevante seria perdida.
+  //
+  // stage.match {
+  //   selector            = "{unit=\"example-app.service\"} !~ \"(?i)error|exception|fatal|deadlock|caused by\""
+  //   action              = "drop"
+  //   drop_counter_reason = "example_app_noise"
+  // }
+
+  // --- Padrao ----------------------------------------------------------------
+  stage.static_labels {
+    values = { categoria = "sistema" }
+  }
+
+  // --- Por unidade systemd ---------------------------------------------------
+  stage.match {
+    selector = "{unit=~\"(sshd|ssh|systemd-logind|cphulkd|sudo).*\"}"
+    stage.static_labels {
+      values = { categoria = "autenticacao" }
+    }
+  }
+
+  stage.match {
+    selector = "{unit=~\"(httpd|apache2|nginx|litespeed|lsws).*\"}"
+    stage.static_labels {
+      values = { categoria = "web" }
+    }
+  }
+
+  stage.match {
+    selector = "{unit=~\"(php-fpm|ea-php|alt-php).*\"}"
+    stage.static_labels {
+      values = { categoria = "php" }
+    }
+  }
+
+  stage.match {
+    selector = "{unit=~\"(mysqld|mariadb|mysql|postgresql).*\"}"
+    stage.static_labels {
+      values = { categoria = "banco" }
+    }
+  }
+
+  stage.match {
+    selector = "{unit=~\"(exim|dovecot|postfix|spamd|mailman).*\"}"
+    stage.static_labels {
+      values = { categoria = "email" }
+    }
+  }
+
+  stage.match {
+    selector = "{unit=~\"(pure-ftpd|proftpd|vsftpd|cpdavd).*\"}"
+    stage.static_labels {
+      values = { categoria = "arquivos" }
+    }
+  }
+
+  stage.match {
+    selector = "{unit=~\"(lfd|csf|firewalld|fail2ban).*\"}"
+    stage.static_labels {
+      values = { categoria = "firewall" }
+    }
+  }
+
+  stage.match {
+    selector = "{unit=~\"(clamd|maldet|imunify|waf-agent).*\"}"
+    stage.static_labels {
+      values = { categoria = "seguranca" }
+    }
+  }
+
+  stage.match {
+    selector = "{unit=~\"(alloy|node_exporter|monitoring-tunnel).*\"}"
+    stage.static_labels {
+      values = { categoria = "monitoramento" }
+    }
+  }
+
+  // Aplicacoes proprias hospedadas no servidor (ajuste a lista).
+  stage.match {
+    selector = "{unit=~\"(example-app|tomcat|pm2-.*)\\.service\"}"
+    stage.static_labels {
+      values = { categoria = "aplicacao" }
+    }
+  }
+
+  // --- Fallback por texto (mensagens sem unit associada) ----------------------
+  stage.match {
+    selector = "{job=\"journal\"} |~ \"(?i)ipdb blocked|lfd|tcp_in blocked|udp_in blocked\""
+    stage.static_labels {
+      values = { categoria = "firewall" }
+    }
+  }
+
+  stage.match {
+    selector = "{job=\"journal\"} |~ \"(?i)failed password|authentication failure|invalid user\""
+    stage.static_labels {
+      values = { categoria = "autenticacao" }
+    }
+  }
+
+  stage.match {
+    selector = "{job=\"journal\"} |~ \"(?i)modsecurity|mod_security\""
+    stage.static_labels {
+      values = { categoria = "seguranca" }
+    }
+  }
+
+  forward_to = [loki.write.hub.receiver]
+}
+
+// -----------------------------------------------------------------------------
+// 3. Access logs do Apache por dominio (opt-in)
+//
+// httpd/mysqld/php-fpm costumam logar em arquivo, nao no journal. Por isso a
+// categoria "web" fica vazia sem esta coleta. Coletar todos os dominios de
+// todas as contas geraria volume alto e exigiria acesso amplo aos logs, entao
+// o modelo e opt-in: so dominios sob investigacao entram na lista.
+//
+// Para adicionar um dominio:
+//   1. Acrescente 2 entradas (http + ssl) seguindo o padrao abaixo.
+//   2. Conceda leitura somente a esses arquivos (domlogs sao 640 root:<conta>):
+//        setfacl -m u:alloy:r /etc/apache2/logs/domlogs/<dominio> \
+//                             /etc/apache2/logs/domlogs/<dominio>-ssl_log
+//      A rotacao diaria do cPanel recria os arquivos sem a ACL; reaplique via
+//      cron (ver scripts/reapply-domlog-acl.sh).
+//   3. systemctl restart alloy
+// O label "dominio" alimenta a variavel "Dominio" do dashboard automaticamente.
+// -----------------------------------------------------------------------------
+local.file_match "web_domlogs" {
+  path_targets = [
+    { "__path__" = "/etc/apache2/logs/domlogs/www.example.com", "host" = "srv-01", "categoria" = "web", "dominio" = "www.example.com", "tipo_log" = "http", "unit" = "httpd-domlog" },
+    { "__path__" = "/etc/apache2/logs/domlogs/www.example.com-ssl_log", "host" = "srv-01", "categoria" = "web", "dominio" = "www.example.com", "tipo_log" = "ssl", "unit" = "httpd-domlog" },
+  ]
+}
+
+loki.source.file "web_domlogs" {
+  targets    = local.file_match.web_domlogs.targets
+  forward_to = [loki.write.hub.receiver]
+}
+
+// -----------------------------------------------------------------------------
+// 4. Envio para o hub (via tunel SSH)
+// -----------------------------------------------------------------------------
+loki.write "hub" {
+  endpoint {
+    url = "http://127.0.0.1:13100/loki/api/v1/push"
+  }
+}
